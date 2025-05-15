@@ -1,31 +1,17 @@
-image: maven:3.8-openjdk-17
-
-variables:
-  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
-  MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end --show-version"
+image: openjdk:17-alpine
 
 cache:
   paths:
-    - .m2/repository/
+    - .m2/repository
 
 stages:
-  - build
   - syntax-check
-
-build:
-  stage: build
-  script:
-    - mvn $MAVEN_CLI_OPTS compile -DskipTests
-  artifacts:
-    paths:
-      - target/
-
+  
 syntax-check:
   stage: syntax-check
   script:
-    - mvn $MAVEN_CLI_OPTS verify -DskipTests
-  dependencies:
-    - build
+    - echo "🔁 Build and check syntax..."
+    - ./mvnw verify -DskipTests
   rules:
     - if: $CI_COMMIT_BRANCH
       allow_failure: false

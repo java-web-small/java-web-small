@@ -1,15 +1,18 @@
 image: maven:3.8.1-openjdk-17-slim
 
 variables:
-  # Định nghĩa các biến môi trường cho Maven
-  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
   MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end --show-version"
 
 cache:
-  key: "${CI_COMMIT_REF_SLUG}"
+  key: "maven-deps-cache"
   paths:
-    - .m2/repository/
-    - target/
+    - $CI_PROJECT_DIR/.m2/repository/
+  policy: pull-push
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 stages:
   - syntax-check
@@ -18,13 +21,10 @@ stages:
 syntax-check:
   stage: syntax-check
   before_script:
-    - mkdir -p .m2/repository
+    - mkdir -p $CI_PROJECT_DIR/.m2/repository
   script:
     - echo "🔁 Build and check syntax..."
     - ./mvnw verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
-  rules:
-    - if: $CI_COMMIT_BRANCH
-      allow_failure: false
   artifacts:
     paths:
       - target/
@@ -35,18 +35,20 @@ sonarqube-check:
   dependencies:
     - syntax-check
   variables:
-    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar" # Defines the location of the analysis task cache
-    GIT_DEPTH: "0" # Tells git to fetch all the branches of the project, required by the analysis task
+    SONAR_USER_HOME: "$CI_PROJECT_DIR/.sonar"
+    GIT_DEPTH: "0"
   before_script:
-    - mkdir -p .m2/repository
-    - mkdir -p .sonar/cache
+    - mkdir -p $CI_PROJECT_DIR/.m2/repository
+    - mkdir -p $CI_PROJECT_DIR/.sonar/cache
   cache:
-    key: "${CI_JOB_NAME}-${CI_COMMIT_REF_SLUG}"
-    paths:
-      - .m2/repository/
-      - .sonar/cache/
+    - key: "maven-deps-cache"
+      paths:
+        - $CI_PROJECT_DIR/.m2/repository/
+      policy: pull-push
+    - key: "sonar-cache"
+      paths:
+        - $CI_PROJECT_DIR/.sonar/cache/
+      policy: pull-push
   script:
     - mvn verify sonar:sonar -Dsonar.projectKey=splus.cec_java-web-small_AZbnXVYG9fW_saT3QWxv -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
   allow_failure: true
-  rules:
-    - if: $CI_COMMIT_BRANCH

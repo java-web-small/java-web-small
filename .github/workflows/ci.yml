@@ -32,17 +32,57 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build and check syntax (skip tests & checkstyle)
+        id: build
         run: |
           mvn verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
+        continue-on-error: true
+
+      - name: Send Discord notification on failure
+        if: steps.build.outcome != 'success'
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          -d '{
+            "embeds": [{
+              "title": "❌ Build Failed",
+              "description": "Syntax check failed in **${{ github.repository }}**",
+              "color": 16711680,
+              "fields": [
+                {
+                  "name": "Repository",
+                  "value": "[${{ github.repository }}](https://github.com/${{ github.repository }})",
+                  "inline": true
+                },
+                {
+                  "name": "Commit",
+                  "value": "[${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})",
+                  "inline": true
+                },
+                {
+                  "name": "Branch",
+                  "value": "${{ github.ref_name }}",
+                  "inline": true
+                },
+                {
+                  "name": "Workflow",
+                  "value": "[${{ github.workflow }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})",
+                  "inline": true
+                }
+              ]
+            }]
+          }' https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
+
+      - name: Exit with build status
+        if: steps.build.outcome != 'success'
+        run: exit 1
 
       - name: Upload target/ directory as artifact
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: mvn-target
           path: target/
           retention-days: 1
 
-  # Job 2: SonarQube Analysis
   # sonar-analysis:
   #   name: SonarQube Analysis
   #   runs-on: ubuntu-latest

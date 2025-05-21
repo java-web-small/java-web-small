@@ -36,7 +36,7 @@ jobs:
           mvn verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
 
       - name: Upload target/ directory as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: mvn-target
           path: target/

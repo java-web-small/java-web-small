@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -55,6 +55,17 @@ public interface OwnerRepository extends JpaRepository<Owner, Integer> {
 	Page<Owner> findByLastNameStartingWith(String lastName, Pageable pageable);
 
 	/**
+	 * Retrieve {@link Owner}s from the data store by last name, first name, and city,
+	 * returning all owners whose last name, first name, and city <i>starts</i> with the given name.
+	 * @param lastName Value to search for in last name
+	 * @param firstName Value to search for in first name
+	 * @param city Value to search for in city
+	 * @return a Collection of matching {@link Owner}s (or an empty Collection if none
+	 * found)
+	 */
+	Page<Owner> findByLastNameStartingWithAndFirstNameStartingWithAndCityStartingWith(String lastName, String firstName, String city, Pageable pageable);
+
+	/**
 	 * Retrieve an {@link Owner} from the data store by id.
 	 * <p>
 	 * This method returns an {@link Optional} containing the {@link Owner} if found. If
@@ -63,10 +74,10 @@ public interface OwnerRepository extends JpaRepository<Owner, Integer> {
 	 * </p>
 	 * @param id the id to search for
 	 * @return an {@link Optional} containing the {@link Owner} if found, or an empty
-	 * {@link Optional} if not found.
-	 * @throws IllegalArgumentException if the id is null (assuming null is not a valid
-	 * input for id)
+	 * {@link Optional} otherwise
 	 */
-	Optional<Owner> findById(@Nonnull Integer id);
+	@Override
+	@Nonnull
+	Optional<Owner> findById(Integer id);
 
 }

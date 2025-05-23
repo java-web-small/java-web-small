@@ -8,6 +8,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   syntax-check:
     name: Build & Syntax Check
@@ -142,7 +146,7 @@ jobs:
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
           # Xử lý conditions nếu có
-          if echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null; then
+          if echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null && [ "$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions | length')" -gt 0 ]; then
             # Đếm conditions
             PASSED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="OK")] | length')
             FAILED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="ERROR")] | length')
@@ -152,12 +156,16 @@ jobs:
             
             # Format conditions cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(if .status == "OK" then "PASS" else "FAIL" end)]"' >> $GITHUB_OUTPUT
+            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [" + (if .status == "OK" then "PASS" else "FAIL" end) + "]"' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "passed_count=0" >> $GITHUB_OUTPUT
             echo "failed_count=0" >> $GITHUB_OUTPUT
-            echo "details=No quality gate conditions found." >> $GITHUB_OUTPUT
+            if [ "$STATUS" == "NONE" ] || [ "$STATUS" == "ERROR" ] && ! echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null; then
+              echo "details=Failed to fetch Quality Gate details from SonarCloud or no conditions defined." >> $GITHUB_OUTPUT
+            else
+              echo "details=No quality gate conditions found or all conditions passed without specific thresholds being checked." >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Send Discord notification for SonarCloud

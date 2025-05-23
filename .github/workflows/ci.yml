@@ -152,7 +152,7 @@ jobs:
             
             # Format conditions cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // \"N/A\")) [\(if .status == "OK" then "✅" else "❌" end)]"' >> $GITHUB_OUTPUT
+            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(if .status == "OK" then "PASS" else "FAIL" end)]"' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "passed_count=0" >> $GITHUB_OUTPUT

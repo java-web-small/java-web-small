@@ -137,83 +137,31 @@ jobs:
           echo "Fetching quality gate result for project $PROJECT_KEY"
           QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
 
-          # Lưu kết quả vào file
-          echo "$QG_RESULT" > qg_result.json
+          # Lưu trạng thái
+          STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # In ra để debug
-          echo "Quality Gate Result:"
-          cat qg_result.json
-
-          # Check if result contains errors
-          if echo "$QG_RESULT" | grep -q "errors"; then
-            echo "Error in SonarCloud API response"
-            echo "status=ERROR" >> $GITHUB_OUTPUT
-            echo "details=Failed to get quality gate status" >> $GITHUB_OUTPUT
-            echo "passed_count=0" >> $GITHUB_OUTPUT
-            echo "failed_count=0" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Trích xuất trạng thái quality gate và đặt làm output
-          QG_STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status')
-          echo "status=$QG_STATUS" >> $GITHUB_OUTPUT
-
-          # Kiểm tra conditions có tồn tại không
+          # Xử lý conditions nếu có
           if echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null; then
-            # Trích xuất conditions để hiển thị chi tiết
-            CONDITIONS=$(echo "$QG_RESULT" | jq -c '.projectStatus.conditions')
-            echo "conditions=$CONDITIONS" >> $GITHUB_OUTPUT
+            # Đếm conditions
+            PASSED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="OK")] | length')
+            FAILED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="ERROR")] | length')
             
-            # Đếm số lượng điều kiện thành công và thất bại
-            PASSED_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="OK") | .status' | wc -l)
-            FAILED_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="ERROR") | .status' | wc -l)
             echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
             echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
             
-            # Tạo chi tiết cho Discord
+            # Format conditions cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            
-            echo "**All Quality Gate Conditions:**" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(.status=="OK" && "✅" || "❌")]"' >> $GITHUB_OUTPUT
-            
+            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- **\(.metricKey)**: \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(.status=="OK" && "✅" || "❌")]"' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
-            
-            # Lấy thêm các issues chính từ SonarCloud
-            echo "Fetching main issues from SonarCloud..."
-            ISSUES=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/issues/search?projectKeys=$PROJECT_KEY&resolved=false&severities=BLOCKER,CRITICAL&ps=5")
-            
-            ISSUES_COUNT=$(echo "$ISSUES" | jq -r '.total')
-            
-            if [ "$ISSUES_COUNT" -gt 0 ]; then
-              echo "main_issues<<EOF" >> $GITHUB_OUTPUT
-              echo "$ISSUES" | jq -r '.issues[] | "- [\(.severity)] \(.message) (\(.component | split(":") | .[1]):\(.line // "N/A"))"' >> $GITHUB_OUTPUT
-              echo "EOF" >> $GITHUB_OUTPUT
-            else
-              echo "main_issues=Không có issues chính" >> $GITHUB_OUTPUT
-            fi
-            
-            # Lấy các metric chính
-            echo "Fetching main metrics from SonarCloud..."
-            METRICS=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells,duplicated_lines_density,coverage")
-            
-            if echo "$METRICS" | jq -e '.component.measures' > /dev/null; then
-              echo "metrics<<EOF" >> $GITHUB_OUTPUT
-              echo "$METRICS" | jq -r '.component.measures[] | "- \(.metric): \(.value)"' >> $GITHUB_OUTPUT
-              echo "EOF" >> $GITHUB_OUTPUT
-            else
-              echo "metrics=Không có dữ liệu metrics" >> $GITHUB_OUTPUT
-            fi
-            
           else
-            echo "No quality gate conditions found"
-            echo "conditions=[]" >> $GITHUB_OUTPUT
             echo "passed_count=0" >> $GITHUB_OUTPUT
             echo "failed_count=0" >> $GITHUB_OUTPUT
-            echo "details=No quality gate conditions reported" >> $GITHUB_OUTPUT
+            echo "details=No quality gate conditions found." >> $GITHUB_OUTPUT
           fi
 
       - name: Send Discord notification for SonarCloud
-        if: steps.quality_gate.outputs.status != ''
+        if: always()
         uses: sarisia/actions-status-discord@v1
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -232,11 +180,7 @@ jobs:
           content: |
             ### Quality Gate Details
 
-            **All Conditions:**
             ${{ steps.quality_gate.outputs.details }}
-
-            **Metrics Overview:**
-            ${{ steps.quality_gate.outputs.metrics }}
 
             [View Full Report on SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
 

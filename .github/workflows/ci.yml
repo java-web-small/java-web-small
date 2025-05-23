@@ -134,7 +134,7 @@ jobs:
           sleep 30
 
           # Lấy kết quả quality gate từ SonarCloud API
-          echo "Fetching quality gate result for project $PROJECT_KEY $SONAR_TOKEN"
+          echo "Fetching quality gate result for project $PROJECT_KEY"
           QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
 
           # Lưu kết quả vào file
@@ -173,18 +173,8 @@ jobs:
             # Tạo chi tiết cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
             
-            # Chi tiết các metrics đạt chuẩn
-            if [ "$PASSED_COUNT" -gt 0 ]; then
-              echo "✅ **Metrics đạt chuẩn:**" >> $GITHUB_OUTPUT
-              echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="OK") | "- \(.metricKey): \(.actualValue) (yêu cầu: \(.errorThreshold // "N/A"))"' >> $GITHUB_OUTPUT
-              echo "" >> $GITHUB_OUTPUT
-            fi
-            
-            # Chi tiết các metrics không đạt chuẩn
-            if [ "$FAILED_COUNT" -gt 0 ]; then
-              echo "❌ **Metrics không đạt chuẩn:**" >> $GITHUB_OUTPUT
-              echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="ERROR") | "- \(.metricKey): \(.actualValue) (yêu cầu: \(.errorThreshold // "N/A"))"' >> $GITHUB_OUTPUT
-            fi
+            echo "**All Quality Gate Conditions:**" >> $GITHUB_OUTPUT
+            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(.status=="OK" && "✅" || "❌")]"' >> $GITHUB_OUTPUT
             
             echo "EOF" >> $GITHUB_OUTPUT
             
@@ -222,57 +212,33 @@ jobs:
             echo "details=No quality gate conditions reported" >> $GITHUB_OUTPUT
           fi
 
-      - name: Send Discord notification for SonarCloud - SUCCESS
-        if: steps.quality_gate.outputs.status == 'OK'
+      - name: Send Discord notification for SonarCloud
+        if: steps.quality_gate.outputs.status != ''
         uses: sarisia/actions-status-discord@v1
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         with:
           webhook: https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
-          title: "✅ SonarCloud Quality Gate: SUCCESS"
-          description: "Code quality check passed in **${{ github.repository }}**"
-          color: 0x00ff00
+          title: ${{ steps.quality_gate.outputs.status == 'OK' && '✅ SonarCloud Quality Gate: SUCCESS' || '❌ SonarCloud Quality Gate: FAILED' }}
+          description: |
+            Quality Gate Analysis for **${{ github.repository }}**
+            Total Conditions: ${{ steps.quality_gate.outputs.passed_count + steps.quality_gate.outputs.failed_count }}
+            ✅ Passed: ${{ steps.quality_gate.outputs.passed_count }}
+            ❌ Failed: ${{ steps.quality_gate.outputs.failed_count }}
+          color: ${{ steps.quality_gate.outputs.status == 'OK' && '0x00ff00' || '0xff0000' }}
           username: SonarCloud Bot
           url: https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small
           avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
           nodetail: false
           content: |
-            ### ✅ Quality Gate: PASSED
+            ### Quality Gate Details
 
-            **Chi tiết:**
+            **All Conditions:**
             ${{ steps.quality_gate.outputs.details }}
 
-            **Metrics chính:**
+            **Metrics Overview:**
             ${{ steps.quality_gate.outputs.metrics }}
 
-            [Xem chi tiết trên SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
-
-      - name: Send Discord notification for SonarCloud - FAILED
-        if: steps.quality_gate.outputs.status != 'OK' && steps.quality_gate.outputs.status != ''
-        uses: sarisia/actions-status-discord@v1
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        with:
-          webhook: https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
-          title: "❌ SonarCloud Quality Gate: FAILED"
-          description: "Code quality issues detected in **${{ github.repository }}**"
-          color: 0xff0000
-          username: SonarCloud Bot
-          url: https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small
-          avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
-          nodetail: false
-          content: |
-            ### ❌ Quality Gate: FAILED
-
-            **Chi tiết:**
-            ${{ steps.quality_gate.outputs.details }}
-
-            **Issues chính:**
-            ${{ steps.quality_gate.outputs.main_issues }}
-
-            **Metrics chính:**
-            ${{ steps.quality_gate.outputs.metrics }}
-
-            [Xem chi tiết trên SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
+            [View Full Report on SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
 
     continue-on-error: true

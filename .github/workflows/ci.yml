@@ -140,119 +140,155 @@ jobs:
           # Get quality gate result from SonarCloud API
           echo "Fetching quality gate result for project $PROJECT_KEY"
           QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
+          echo "Raw QG result: $QG_RESULT"
 
           # Save status
           STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # Get conditions from quality gate result
-          CONDITIONS=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions // []')
+          # Create temporary files for metrics
+          echo "" > /tmp/failed_metrics.txt
+          echo "" > /tmp/passed_metrics.txt
+          echo "" > /tmp/other_metrics.txt
 
-          # Create arrays for passing and failing conditions
-          PASSED_METRICS=()
-          FAILED_METRICS=()
-          OTHER_METRICS=()
+          # Get raw measures from API for fallback
+          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells,new_coverage,new_duplicated_lines_density")
 
-          # Process each condition
-          echo "$CONDITIONS" | jq -c '.[]' | while read -r condition; do
-            METRIC_KEY=$(echo "$condition" | jq -r '.metricKey')
-            ACTUAL_VALUE=$(echo "$condition" | jq -r '.actualValue')
-            ERROR_THRESHOLD=$(echo "$condition" | jq -r '.errorThreshold')
-            COMPARATOR=$(echo "$condition" | jq -r '.comparator')
-            STATUS=$(echo "$condition" | jq -r '.status')
-            
-            # Format condition text based on comparator
-            if [[ "$COMPARATOR" == "LT" ]]; then
-              # LT means the actual value should be >= threshold
-              DISPLAY_COMPARATOR="≥"
-            elif [[ "$COMPARATOR" == "GT" ]]; then
-              # GT means the actual value should be <= threshold
-              DISPLAY_COMPARATOR="≤"
-            elif [[ "$COMPARATOR" == "EQ" ]]; then
-              DISPLAY_COMPARATOR="="
-            else
-              DISPLAY_COMPARATOR="$COMPARATOR"
-            fi
-            
-            # Format user-friendly metric name
-            case "$METRIC_KEY" in
-              "new_coverage")
-                METRIC_NAME="Coverage on New Code"
-                UNIT="%"
-                ;;
-              "new_duplicated_lines_density")
-                METRIC_NAME="Duplication on New Code"
-                UNIT="%"
-                ;;
-              "new_blocker_violations")
-                METRIC_NAME="Blocker Violations on New Code"
-                UNIT=""
-                ;;
-              "new_critical_violations")
-                METRIC_NAME="Critical Violations on New Code"
-                UNIT=""
-                ;;
-              "new_sqale_debt_ratio")
-                METRIC_NAME="Technical Debt Ratio on New Code"
-                UNIT="%"
-                ;;
-              "bugs")
-                METRIC_NAME="Bugs"
-                UNIT=""
-                ;;
-              "vulnerabilities")
-                METRIC_NAME="Vulnerabilities"
-                UNIT=""
-                ;;
-              "security_hotspots")
-                METRIC_NAME="Security Hotspots"
-                UNIT=""
-                ;;
-              "code_smells")
-                METRIC_NAME="Code Smells"
-                UNIT=""
-                ;;
-              *)
-                METRIC_NAME="$METRIC_KEY"
-                UNIT=""
-                ;;
-            esac
-            
-            # Create formatted condition text
-            CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
-            
-            # Add to appropriate array
-            if [[ "$STATUS" == "OK" ]]; then
-              PASSED_METRICS+=("$CONDITION_TEXT")
-            elif [[ "$STATUS" == "ERROR" ]]; then
-              FAILED_METRICS+=("$CONDITION_TEXT")
-            else
-              OTHER_METRICS+=("$CONDITION_TEXT")
-            fi
-          done
-
-          # Manually check for standard metrics that aren't in conditions
-          # Get remaining measures from regular API
-          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells")
-
+          # Always add Code Smells to other metrics
           CODE_SMELLS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
-          OTHER_METRICS+=("- Code Smells: ${CODE_SMELLS}")
+          echo "- Code Smells: ${CODE_SMELLS}" >> /tmp/other_metrics.txt
 
-          # Extract metrics arrays to files to avoid subshell issues
-          printf '%s\n' "${FAILED_METRICS[@]}" > /tmp/failed_metrics.txt
-          printf '%s\n' "${PASSED_METRICS[@]}" > /tmp/passed_metrics.txt
-          printf '%s\n' "${OTHER_METRICS[@]}" > /tmp/other_metrics.txt
+          # Direct access to conditions without subshell
+          CONDITIONS_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions | length // 0')
+
+          if [ "$CONDITIONS_COUNT" -gt 0 ]; then
+            # Process each condition individually
+            for i in $(seq 0 $(($CONDITIONS_COUNT - 1))); do
+              CONDITION=$(echo "$QG_RESULT" | jq -r ".projectStatus.conditions[$i]")
+              
+              METRIC_KEY=$(echo "$CONDITION" | jq -r '.metricKey')
+              ACTUAL_VALUE=$(echo "$CONDITION" | jq -r '.actualValue')
+              ERROR_THRESHOLD=$(echo "$CONDITION" | jq -r '.errorThreshold')
+              COMPARATOR=$(echo "$CONDITION" | jq -r '.comparator')
+              STATUS=$(echo "$CONDITION" | jq -r '.status')
+              
+              echo "Processing condition: $METRIC_KEY - $STATUS"
+              
+              # Format condition text based on comparator
+              case "$COMPARATOR" in
+                "LT") DISPLAY_COMPARATOR="≥" ;;
+                "GT") DISPLAY_COMPARATOR="≤" ;;
+                "EQ") DISPLAY_COMPARATOR="=" ;;
+                *) DISPLAY_COMPARATOR="$COMPARATOR" ;;
+              esac
+              
+              # Format user-friendly metric name
+              case "$METRIC_KEY" in
+                "new_coverage")
+                  METRIC_NAME="Coverage on New Code"
+                  UNIT="%"
+                  ;;
+                "new_duplicated_lines_density")
+                  METRIC_NAME="Duplication on New Code"
+                  UNIT="%"
+                  ;;
+                "new_blocker_violations")
+                  METRIC_NAME="Blocker Violations on New Code"
+                  UNIT=""
+                  ;;
+                "new_critical_violations")
+                  METRIC_NAME="Critical Violations on New Code"
+                  UNIT=""
+                  ;;
+                "new_sqale_debt_ratio")
+                  METRIC_NAME="Technical Debt Ratio on New Code"
+                  UNIT="%"
+                  ;;
+                "bugs")
+                  METRIC_NAME="Bugs"
+                  UNIT=""
+                  ;;
+                "vulnerabilities")
+                  METRIC_NAME="Vulnerabilities"
+                  UNIT=""
+                  ;;
+                "security_hotspots")
+                  METRIC_NAME="Security Hotspots"
+                  UNIT=""
+                  ;;
+                "code_smells")
+                  METRIC_NAME="Code Smells"
+                  UNIT=""
+                  ;;
+                *)
+                  METRIC_NAME="$METRIC_KEY"
+                  UNIT=""
+                  ;;
+              esac
+              
+              # Create formatted condition text
+              CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
+              
+              # Add to appropriate file
+              if [ "$STATUS" = "OK" ]; then
+                echo "$CONDITION_TEXT" >> /tmp/passed_metrics.txt
+              elif [ "$STATUS" = "ERROR" ]; then
+                echo "$CONDITION_TEXT" >> /tmp/failed_metrics.txt
+              else
+                echo "$CONDITION_TEXT" >> /tmp/other_metrics.txt
+              fi
+            done
+          else
+            # Fallback for common metrics if no conditions provided
+            echo "No conditions found in quality gate result, using fallback values..."
+            
+            # Coverage
+            NEW_COVERAGE=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "new_coverage") | .period.value // "0.0"')
+            if [ -n "$NEW_COVERAGE" ] && [ "$NEW_COVERAGE" != "null" ]; then
+              if (( $(echo "$NEW_COVERAGE >= 80" | bc -l) )); then
+                echo "- Coverage on New Code: ${NEW_COVERAGE}% (required ≥ 80%)" >> /tmp/passed_metrics.txt
+              else
+                echo "- Coverage on New Code: ${NEW_COVERAGE}% (required ≥ 80%)" >> /tmp/failed_metrics.txt
+              fi
+            fi
+            
+            # Duplication
+            NEW_DUPLICATION=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "new_duplicated_lines_density") | .period.value // "0.0"')
+            if [ -n "$NEW_DUPLICATION" ] && [ "$NEW_DUPLICATION" != "null" ]; then
+              if (( $(echo "$NEW_DUPLICATION <= 3" | bc -l) )); then
+                echo "- Duplication on New Code: ${NEW_DUPLICATION}% (required ≤ 3%)" >> /tmp/passed_metrics.txt
+              else
+                echo "- Duplication on New Code: ${NEW_DUPLICATION}% (required ≤ 3%)" >> /tmp/failed_metrics.txt
+              fi
+            fi
+            
+            # Bugs
+            BUGS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "bugs") | .value // "0"')
+            if [ "$BUGS" = "0" ]; then
+              echo "- Bugs: ${BUGS} (required = 0)" >> /tmp/passed_metrics.txt
+            else
+              echo "- Bugs: ${BUGS} (required = 0)" >> /tmp/failed_metrics.txt
+            fi
+            
+            # Vulnerabilities
+            VULNS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "vulnerabilities") | .value // "0"')
+            if [ "$VULNS" = "0" ]; then
+              echo "- Vulnerabilities: ${VULNS} (required = 0)" >> /tmp/passed_metrics.txt
+            else
+              echo "- Vulnerabilities: ${VULNS} (required = 0)" >> /tmp/failed_metrics.txt
+            fi
+          fi
 
           # Count failed/passed
-          FAILED_COUNT=$(wc -l < /tmp/failed_metrics.txt)
-          PASSED_COUNT=$(wc -l < /tmp/passed_metrics.txt)
+          FAILED_COUNT=$(grep -c "^-" /tmp/failed_metrics.txt || echo "0")
+          PASSED_COUNT=$(grep -c "^-" /tmp/passed_metrics.txt || echo "0")
 
           echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
           echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
 
           # Format outputs
           echo "failed_metrics<<EOF" >> $GITHUB_OUTPUT
-          if [ -s /tmp/failed_metrics.txt ]; then
+          if [ "$FAILED_COUNT" -gt 0 ]; then
             cat /tmp/failed_metrics.txt >> $GITHUB_OUTPUT
           else
             echo "No failed conditions" >> $GITHUB_OUTPUT
@@ -260,7 +296,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "passed_metrics<<EOF" >> $GITHUB_OUTPUT
-          if [ -s /tmp/passed_metrics.txt ]; then
+          if [ "$PASSED_COUNT" -gt 0 ]; then
             cat /tmp/passed_metrics.txt >> $GITHUB_OUTPUT
           else
             echo "No passed conditions" >> $GITHUB_OUTPUT
@@ -268,11 +304,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "other_metrics<<EOF" >> $GITHUB_OUTPUT
-          if [ -s /tmp/other_metrics.txt ]; then
-            cat /tmp/other_metrics.txt >> $GITHUB_OUTPUT
-          else
-            echo "No other metrics" >> $GITHUB_OUTPUT
-          fi
+          cat /tmp/other_metrics.txt >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Send Discord notification for SonarCloud

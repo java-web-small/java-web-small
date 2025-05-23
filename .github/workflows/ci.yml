@@ -172,8 +172,48 @@ jobs:
             
             # Tạo chi tiết cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (threshold: \(.errorThreshold // "N/A"))"' >> $GITHUB_OUTPUT
+            
+            # Chi tiết các metrics đạt chuẩn
+            if [ "$PASSED_COUNT" -gt 0 ]; then
+              echo "✅ **Metrics đạt chuẩn:**" >> $GITHUB_OUTPUT
+              echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="OK") | "- \(.metricKey): \(.actualValue) (yêu cầu: \(.errorThreshold // "N/A"))"' >> $GITHUB_OUTPUT
+              echo "" >> $GITHUB_OUTPUT
+            fi
+            
+            # Chi tiết các metrics không đạt chuẩn
+            if [ "$FAILED_COUNT" -gt 0 ]; then
+              echo "❌ **Metrics không đạt chuẩn:**" >> $GITHUB_OUTPUT
+              echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="ERROR") | "- \(.metricKey): \(.actualValue) (yêu cầu: \(.errorThreshold // "N/A"))"' >> $GITHUB_OUTPUT
+            fi
+            
             echo "EOF" >> $GITHUB_OUTPUT
+            
+            # Lấy thêm các issues chính từ SonarCloud
+            echo "Fetching main issues from SonarCloud..."
+            ISSUES=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/issues/search?projectKeys=$PROJECT_KEY&resolved=false&severities=BLOCKER,CRITICAL&ps=5")
+            
+            ISSUES_COUNT=$(echo "$ISSUES" | jq -r '.total')
+            
+            if [ "$ISSUES_COUNT" -gt 0 ]; then
+              echo "main_issues<<EOF" >> $GITHUB_OUTPUT
+              echo "$ISSUES" | jq -r '.issues[] | "- [\(.severity)] \(.message) (\(.component | split(":") | .[1]):\(.line // "N/A"))"' >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "main_issues=Không có issues chính" >> $GITHUB_OUTPUT
+            fi
+            
+            # Lấy các metric chính
+            echo "Fetching main metrics from SonarCloud..."
+            METRICS=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells,duplicated_lines_density,coverage")
+            
+            if echo "$METRICS" | jq -e '.component.measures' > /dev/null; then
+              echo "metrics<<EOF" >> $GITHUB_OUTPUT
+              echo "$METRICS" | jq -r '.component.measures[] | "- \(.metric): \(.value)"' >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "metrics=Không có dữ liệu metrics" >> $GITHUB_OUTPUT
+            fi
+            
           else
             echo "No quality gate conditions found"
             echo "conditions=[]" >> $GITHUB_OUTPUT
@@ -197,9 +237,15 @@ jobs:
           avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
           nodetail: false
           content: |
-            ### Quality Gate: PASSED
-            **Details:**
+            ### ✅ Quality Gate: PASSED
+
+            **Chi tiết:**
             ${{ steps.quality_gate.outputs.details }}
+
+            **Metrics chính:**
+            ${{ steps.quality_gate.outputs.metrics }}
+
+            [Xem chi tiết trên SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
 
       - name: Send Discord notification for SonarCloud - FAILED
         if: steps.quality_gate.outputs.status != 'OK' && steps.quality_gate.outputs.status != ''
@@ -216,8 +262,17 @@ jobs:
           avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
           nodetail: false
           content: |
-            ### Quality Gate: FAILED
-            **Details:**
+            ### ❌ Quality Gate: FAILED
+
+            **Chi tiết:**
             ${{ steps.quality_gate.outputs.details }}
+
+            **Issues chính:**
+            ${{ steps.quality_gate.outputs.main_issues }}
+
+            **Metrics chính:**
+            ${{ steps.quality_gate.outputs.metrics }}
+
+            [Xem chi tiết trên SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
 
     continue-on-error: true

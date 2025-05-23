@@ -152,7 +152,7 @@ jobs:
             
             # Format conditions cho Discord
             echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- **\(.metricKey)**: \(.actualValue) (Required: \(.errorThreshold // "N/A")) [\(.status=="OK" && "✅" || "❌")]"' >> $GITHUB_OUTPUT
+            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // \"N/A\")) [\(if .status == "OK" then "✅" else "❌" end)]"' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "passed_count=0" >> $GITHUB_OUTPUT
@@ -166,7 +166,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         with:
-          webhook: ${DISCORD_WEBHOOK}
+          webhook: https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
           title: "${{ steps.quality_gate.outputs.status == 'OK' && '✅ SonarCloud Quality Gate: SUCCESS' || '❌ SonarCloud Quality Gate: FAILED' }}"
           description: |
             Quality Gate Analysis for **${{ github.repository }}**

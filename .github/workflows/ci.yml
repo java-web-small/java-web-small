@@ -145,79 +145,135 @@ jobs:
           STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # Process all metrics from SonarCloud
-          METRICS_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=coverage,duplicated_lines_density,bugs,vulnerabilities,security_hotspots,code_smells")
+          # Get conditions from quality gate result
+          CONDITIONS=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions // []')
 
-          # Format detailed conditions
-          echo "details<<EOF" >> $GITHUB_OUTPUT
+          # Create arrays for passing and failing conditions
+          PASSED_METRICS=()
+          FAILED_METRICS=()
+          OTHER_METRICS=()
 
-          # Coverage
-          COVERAGE=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "coverage") | .value // "0"')
-          echo "- Coverage on New Code: ${COVERAGE}% (required ≥ 80%)" >> $GITHUB_OUTPUT
+          # Process each condition
+          echo "$CONDITIONS" | jq -c '.[]' | while read -r condition; do
+            METRIC_KEY=$(echo "$condition" | jq -r '.metricKey')
+            ACTUAL_VALUE=$(echo "$condition" | jq -r '.actualValue')
+            ERROR_THRESHOLD=$(echo "$condition" | jq -r '.errorThreshold')
+            COMPARATOR=$(echo "$condition" | jq -r '.comparator')
+            STATUS=$(echo "$condition" | jq -r '.status')
+            
+            # Format condition text based on comparator
+            if [[ "$COMPARATOR" == "LT" ]]; then
+              # LT means the actual value should be >= threshold
+              DISPLAY_COMPARATOR="≥"
+            elif [[ "$COMPARATOR" == "GT" ]]; then
+              # GT means the actual value should be <= threshold
+              DISPLAY_COMPARATOR="≤"
+            elif [[ "$COMPARATOR" == "EQ" ]]; then
+              DISPLAY_COMPARATOR="="
+            else
+              DISPLAY_COMPARATOR="$COMPARATOR"
+            fi
+            
+            # Format user-friendly metric name
+            case "$METRIC_KEY" in
+              "new_coverage")
+                METRIC_NAME="Coverage on New Code"
+                UNIT="%"
+                ;;
+              "new_duplicated_lines_density")
+                METRIC_NAME="Duplication on New Code"
+                UNIT="%"
+                ;;
+              "new_blocker_violations")
+                METRIC_NAME="Blocker Violations on New Code"
+                UNIT=""
+                ;;
+              "new_critical_violations")
+                METRIC_NAME="Critical Violations on New Code"
+                UNIT=""
+                ;;
+              "new_sqale_debt_ratio")
+                METRIC_NAME="Technical Debt Ratio on New Code"
+                UNIT="%"
+                ;;
+              "bugs")
+                METRIC_NAME="Bugs"
+                UNIT=""
+                ;;
+              "vulnerabilities")
+                METRIC_NAME="Vulnerabilities"
+                UNIT=""
+                ;;
+              "security_hotspots")
+                METRIC_NAME="Security Hotspots"
+                UNIT=""
+                ;;
+              "code_smells")
+                METRIC_NAME="Code Smells"
+                UNIT=""
+                ;;
+              *)
+                METRIC_NAME="$METRIC_KEY"
+                UNIT=""
+                ;;
+            esac
+            
+            # Create formatted condition text
+            CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
+            
+            # Add to appropriate array
+            if [[ "$STATUS" == "OK" ]]; then
+              PASSED_METRICS+=("$CONDITION_TEXT")
+            elif [[ "$STATUS" == "ERROR" ]]; then
+              FAILED_METRICS+=("$CONDITION_TEXT")
+            else
+              OTHER_METRICS+=("$CONDITION_TEXT")
+            fi
+          done
 
-          # Duplication
-          DUPLICATION=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "duplicated_lines_density") | .value // "0"')
-          echo "- Duplication on New Code: ${DUPLICATION}% (required < 3%)" >> $GITHUB_OUTPUT
+          # Manually check for standard metrics that aren't in conditions
+          # Get remaining measures from regular API
+          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells")
 
-          # Bugs
-          BUGS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "bugs") | .value // "0"')
-          echo "- Bugs: ${BUGS} (required = 0)" >> $GITHUB_OUTPUT
+          CODE_SMELLS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
+          OTHER_METRICS+=("- Code Smells: ${CODE_SMELLS}")
 
-          # Vulnerabilities
-          VULNS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "vulnerabilities") | .value // "0"')
-          echo "- Vulnerabilities: ${VULNS} (required = 0)" >> $GITHUB_OUTPUT
+          # Extract metrics arrays to files to avoid subshell issues
+          printf '%s\n' "${FAILED_METRICS[@]}" > /tmp/failed_metrics.txt
+          printf '%s\n' "${PASSED_METRICS[@]}" > /tmp/passed_metrics.txt
+          printf '%s\n' "${OTHER_METRICS[@]}" > /tmp/other_metrics.txt
 
-          # Security Hotspots
-          HOTSPOTS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "security_hotspots") | .value // "0"')
-          echo "- Security Hotspots: ${HOTSPOTS} (required = 0)" >> $GITHUB_OUTPUT
+          # Count failed/passed
+          FAILED_COUNT=$(wc -l < /tmp/failed_metrics.txt)
+          PASSED_COUNT=$(wc -l < /tmp/passed_metrics.txt)
 
-          # Code Smells
-          CODE_SMELLS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
-          echo "- Code Smells: ${CODE_SMELLS}" >> $GITHUB_OUTPUT
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
 
+          # Format outputs
+          echo "failed_metrics<<EOF" >> $GITHUB_OUTPUT
+          if [ -s /tmp/failed_metrics.txt ]; then
+            cat /tmp/failed_metrics.txt >> $GITHUB_OUTPUT
+          else
+            echo "No failed conditions" >> $GITHUB_OUTPUT
+          fi
           echo "EOF" >> $GITHUB_OUTPUT
 
-          # Count passed and failed conditions
-          PASSED_COUNT=0
-          FAILED_COUNT=0
-
-          # Check coverage
-          if (( $(echo "$COVERAGE >= 80" | bc -l) )); then
-            ((PASSED_COUNT++))
+          echo "passed_metrics<<EOF" >> $GITHUB_OUTPUT
+          if [ -s /tmp/passed_metrics.txt ]; then
+            cat /tmp/passed_metrics.txt >> $GITHUB_OUTPUT
           else
-            ((FAILED_COUNT++))
+            echo "No passed conditions" >> $GITHUB_OUTPUT
           fi
+          echo "EOF" >> $GITHUB_OUTPUT
 
-          # Check duplication
-          if (( $(echo "$DUPLICATION < 3" | bc -l) )); then
-            ((PASSED_COUNT++))
+          echo "other_metrics<<EOF" >> $GITHUB_OUTPUT
+          if [ -s /tmp/other_metrics.txt ]; then
+            cat /tmp/other_metrics.txt >> $GITHUB_OUTPUT
           else
-            ((FAILED_COUNT++))
+            echo "No other metrics" >> $GITHUB_OUTPUT
           fi
-
-          # Check bugs
-          if [ "$BUGS" = "0" ]; then
-            ((PASSED_COUNT++))
-          else
-            ((FAILED_COUNT++))
-          fi
-
-          # Check vulnerabilities
-          if [ "$VULNS" = "0" ]; then
-            ((PASSED_COUNT++))
-          else
-            ((FAILED_COUNT++))
-          fi
-
-          # Check security hotspots
-          if [ "$HOTSPOTS" = "0" ]; then
-            ((PASSED_COUNT++))
-          else
-            ((FAILED_COUNT++))
-          fi
-
-          echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
-          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Send Discord notification for SonarCloud
         if: always()
@@ -229,8 +285,6 @@ jobs:
           title: "${{ steps.quality_gate.outputs.status == 'OK' && '✅ SonarCloud Quality Gate: SUCCESS' || '❌ SonarCloud Quality Gate: FAILED' }}"
           description: |
             Quality Gate Analysis for **${{ github.repository }}**
-            ✅ Passed: ${{ steps.quality_gate.outputs.passed_count }}
-            ❌ Failed: ${{ steps.quality_gate.outputs.failed_count }}
           color: "${{ steps.quality_gate.outputs.status == 'OK' && '0x00ff00' || '0xff0000' }}"
           username: SonarCloud Bot
           url: https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small
@@ -239,7 +293,14 @@ jobs:
           content: |
             ### Quality Gate Details
 
-            ${{ steps.quality_gate.outputs.details }}
+            #### Failed Conditions
+            ${{ steps.quality_gate.outputs.failed_metrics }}
+
+            #### Passed Conditions
+            ${{ steps.quality_gate.outputs.passed_metrics }}
+
+            #### Other Metrics
+            ${{ steps.quality_gate.outputs.other_metrics }}
 
             [View Full Report on SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
 

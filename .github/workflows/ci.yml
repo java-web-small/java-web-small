@@ -133,40 +133,91 @@ jobs:
         run: |
           PROJECT_KEY="antnm-splus_java-web-small"
 
-          # Đợi để SonarCloud phân tích kết quả
+          # Wait for SonarCloud analysis to complete
           echo "Waiting for SonarCloud analysis to complete..."
           sleep 30
 
-          # Lấy kết quả quality gate từ SonarCloud API
+          # Get quality gate result from SonarCloud API
           echo "Fetching quality gate result for project $PROJECT_KEY"
           QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
 
-          # Lưu trạng thái
+          # Save status
           STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # Xử lý conditions nếu có
-          if echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null && [ "$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions | length')" -gt 0 ]; then
-            # Đếm conditions
-            PASSED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="OK")] | length')
-            FAILED_COUNT=$(echo "$QG_RESULT" | jq -r '[.projectStatus.conditions[] | select(.status=="ERROR")] | length')
-            
-            echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
-            echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
-            
-            # Format conditions cho Discord
-            echo "details<<EOF" >> $GITHUB_OUTPUT
-            echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (Required: \(.errorThreshold // "N/A")) [" + (if .status == "OK" then "PASS" else "FAIL" end) + "]"' >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+          # Process all metrics from SonarCloud
+          METRICS_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=coverage,duplicated_lines_density,bugs,vulnerabilities,security_hotspots,code_smells")
+
+          # Format detailed conditions
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+
+          # Coverage
+          COVERAGE=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "coverage") | .value // "0"')
+          echo "- Coverage on New Code: ${COVERAGE}% (required ≥ 80%)" >> $GITHUB_OUTPUT
+
+          # Duplication
+          DUPLICATION=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "duplicated_lines_density") | .value // "0"')
+          echo "- Duplication on New Code: ${DUPLICATION}% (required < 3%)" >> $GITHUB_OUTPUT
+
+          # Bugs
+          BUGS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "bugs") | .value // "0"')
+          echo "- Bugs: ${BUGS} (required = 0)" >> $GITHUB_OUTPUT
+
+          # Vulnerabilities
+          VULNS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "vulnerabilities") | .value // "0"')
+          echo "- Vulnerabilities: ${VULNS} (required = 0)" >> $GITHUB_OUTPUT
+
+          # Security Hotspots
+          HOTSPOTS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "security_hotspots") | .value // "0"')
+          echo "- Security Hotspots: ${HOTSPOTS} (required = 0)" >> $GITHUB_OUTPUT
+
+          # Code Smells
+          CODE_SMELLS=$(echo "$METRICS_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
+          echo "- Code Smells: ${CODE_SMELLS}" >> $GITHUB_OUTPUT
+
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Count passed and failed conditions
+          PASSED_COUNT=0
+          FAILED_COUNT=0
+
+          # Check coverage
+          if (( $(echo "$COVERAGE >= 80" | bc -l) )); then
+            ((PASSED_COUNT++))
           else
-            echo "passed_count=0" >> $GITHUB_OUTPUT
-            echo "failed_count=0" >> $GITHUB_OUTPUT
-            if [ "$STATUS" == "NONE" ] || [ "$STATUS" == "ERROR" ] && ! echo "$QG_RESULT" | jq -e '.projectStatus.conditions' > /dev/null; then
-              echo "details=Failed to fetch Quality Gate details from SonarCloud or no conditions defined." >> $GITHUB_OUTPUT
-            else
-              echo "details=No quality gate conditions found or all conditions passed without specific thresholds being checked." >> $GITHUB_OUTPUT
-            fi
+            ((FAILED_COUNT++))
           fi
+
+          # Check duplication
+          if (( $(echo "$DUPLICATION < 3" | bc -l) )); then
+            ((PASSED_COUNT++))
+          else
+            ((FAILED_COUNT++))
+          fi
+
+          # Check bugs
+          if [ "$BUGS" = "0" ]; then
+            ((PASSED_COUNT++))
+          else
+            ((FAILED_COUNT++))
+          fi
+
+          # Check vulnerabilities
+          if [ "$VULNS" = "0" ]; then
+            ((PASSED_COUNT++))
+          else
+            ((FAILED_COUNT++))
+          fi
+
+          # Check security hotspots
+          if [ "$HOTSPOTS" = "0" ]; then
+            ((PASSED_COUNT++))
+          else
+            ((FAILED_COUNT++))
+          fi
+
+          echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
 
       - name: Send Discord notification for SonarCloud
         if: always()

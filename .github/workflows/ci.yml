@@ -131,7 +131,7 @@ jobs:
 
           # Đợi để SonarCloud phân tích kết quả
           echo "Waiting for SonarCloud analysis to complete..."
-          sleep 20
+          sleep 30
 
           # Lấy kết quả quality gate từ SonarCloud API
           echo "Fetching quality gate result for project $PROJECT_KEY"

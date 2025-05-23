@@ -137,34 +137,47 @@ jobs:
           echo "Waiting for SonarCloud analysis to complete..."
           sleep 30
 
-          # Get quality gate result from SonarCloud API
-          echo "Fetching quality gate result for project $PROJECT_KEY"
-          QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
+          # Create temporary files for metrics
+          echo "" > /tmp/failed_metrics.txt
+          echo "" > /tmp/passed_metrics.txt
+          echo "" > /tmp/other_metrics.txt
+
+          # Get pull request number if running on PR
+          if [ -n "$GITHUB_HEAD_REF" ]; then
+            PR_NUMBER=$(echo $GITHUB_REF | sed 's/refs\/pull\/\([0-9]*\)\/merge/\1/')
+            echo "Running on PR #$PR_NUMBER"
+            QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY&pullRequest=$PR_NUMBER")
+          else
+            # If running on branch (usually main)
+            BRANCH=${GITHUB_REF#refs/heads/}
+            echo "Running on branch $BRANCH"
+            QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY&branch=$BRANCH")
+          fi
+
           echo "Raw QG result: $QG_RESULT"
 
           # Save status
           STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # Create temporary files for metrics
-          echo "" > /tmp/failed_metrics.txt
-          echo "" > /tmp/passed_metrics.txt
-          echo "" > /tmp/other_metrics.txt
-
-          # Get raw measures from API for fallback
-          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,security_hotspots,code_smells,new_coverage,new_duplicated_lines_density")
+          # Get code smells for other metrics
+          echo "Fetching measures from SonarCloud API..."
+          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=code_smells")
 
           # Always add Code Smells to other metrics
           CODE_SMELLS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
           echo "- Code Smells: ${CODE_SMELLS}" >> /tmp/other_metrics.txt
 
-          # Direct access to conditions without subshell
-          CONDITIONS_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions | length // 0')
+          # Process conditions from API response
+          CONDITIONS=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions // []')
+          CONDITIONS_COUNT=$(echo "$CONDITIONS" | jq -r 'length')
 
           if [ "$CONDITIONS_COUNT" -gt 0 ]; then
-            # Process each condition individually
+            echo "Processing $CONDITIONS_COUNT conditions from API"
+            
+            # Process each condition
             for i in $(seq 0 $(($CONDITIONS_COUNT - 1))); do
-              CONDITION=$(echo "$QG_RESULT" | jq -r ".projectStatus.conditions[$i]")
+              CONDITION=$(echo "$CONDITIONS" | jq -r ".[$i]")
               
               METRIC_KEY=$(echo "$CONDITION" | jq -r '.metricKey')
               ACTUAL_VALUE=$(echo "$CONDITION" | jq -r '.actualValue')
@@ -175,12 +188,17 @@ jobs:
               echo "Processing condition: $METRIC_KEY - $STATUS"
               
               # Format condition text based on comparator
-              case "$COMPARATOR" in
-                "LT") DISPLAY_COMPARATOR="≥" ;;
-                "GT") DISPLAY_COMPARATOR="≤" ;;
-                "EQ") DISPLAY_COMPARATOR="=" ;;
-                *) DISPLAY_COMPARATOR="$COMPARATOR" ;;
-              esac
+              if [ "$COMPARATOR" = "LT" ]; then
+                # LT means the actual value should be >= threshold
+                DISPLAY_COMPARATOR="≥"
+              elif [ "$COMPARATOR" = "GT" ]; then
+                # GT means the actual value should be <= threshold
+                DISPLAY_COMPARATOR="≤"
+              elif [ "$COMPARATOR" = "EQ" ]; then
+                DISPLAY_COMPARATOR="="
+              else
+                DISPLAY_COMPARATOR="$COMPARATOR"
+              fi
               
               # Format user-friendly metric name
               case "$METRIC_KEY" in
@@ -192,33 +210,21 @@ jobs:
                   METRIC_NAME="Duplication on New Code"
                   UNIT="%"
                   ;;
-                "new_blocker_violations")
-                  METRIC_NAME="Blocker Violations on New Code"
+                "new_reliability_rating")
+                  METRIC_NAME="Reliability Rating"
                   UNIT=""
                   ;;
-                "new_critical_violations")
-                  METRIC_NAME="Critical Violations on New Code"
+                "new_security_rating")
+                  METRIC_NAME="Security Rating"
                   UNIT=""
                   ;;
-                "new_sqale_debt_ratio")
-                  METRIC_NAME="Technical Debt Ratio on New Code"
+                "new_maintainability_rating")
+                  METRIC_NAME="Maintainability Rating"
+                  UNIT=""
+                  ;;
+                "new_security_hotspots_reviewed")
+                  METRIC_NAME="Security Hotspots Reviewed"
                   UNIT="%"
-                  ;;
-                "bugs")
-                  METRIC_NAME="Bugs"
-                  UNIT=""
-                  ;;
-                "vulnerabilities")
-                  METRIC_NAME="Vulnerabilities"
-                  UNIT=""
-                  ;;
-                "security_hotspots")
-                  METRIC_NAME="Security Hotspots"
-                  UNIT=""
-                  ;;
-                "code_smells")
-                  METRIC_NAME="Code Smells"
-                  UNIT=""
                   ;;
                 *)
                   METRIC_NAME="$METRIC_KEY"
@@ -229,7 +235,7 @@ jobs:
               # Create formatted condition text
               CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
               
-              # Add to appropriate file
+              # Add to appropriate file based on status
               if [ "$STATUS" = "OK" ]; then
                 echo "$CONDITION_TEXT" >> /tmp/passed_metrics.txt
               elif [ "$STATUS" = "ERROR" ]; then
@@ -239,44 +245,8 @@ jobs:
               fi
             done
           else
-            # Fallback for common metrics if no conditions provided
-            echo "No conditions found in quality gate result, using fallback values..."
-            
-            # Coverage
-            NEW_COVERAGE=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "new_coverage") | .period.value // "0.0"')
-            if [ -n "$NEW_COVERAGE" ] && [ "$NEW_COVERAGE" != "null" ]; then
-              if (( $(echo "$NEW_COVERAGE >= 80" | bc -l) )); then
-                echo "- Coverage on New Code: ${NEW_COVERAGE}% (required ≥ 80%)" >> /tmp/passed_metrics.txt
-              else
-                echo "- Coverage on New Code: ${NEW_COVERAGE}% (required ≥ 80%)" >> /tmp/failed_metrics.txt
-              fi
-            fi
-            
-            # Duplication
-            NEW_DUPLICATION=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "new_duplicated_lines_density") | .period.value // "0.0"')
-            if [ -n "$NEW_DUPLICATION" ] && [ "$NEW_DUPLICATION" != "null" ]; then
-              if (( $(echo "$NEW_DUPLICATION <= 3" | bc -l) )); then
-                echo "- Duplication on New Code: ${NEW_DUPLICATION}% (required ≤ 3%)" >> /tmp/passed_metrics.txt
-              else
-                echo "- Duplication on New Code: ${NEW_DUPLICATION}% (required ≤ 3%)" >> /tmp/failed_metrics.txt
-              fi
-            fi
-            
-            # Bugs
-            BUGS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "bugs") | .value // "0"')
-            if [ "$BUGS" = "0" ]; then
-              echo "- Bugs: ${BUGS} (required = 0)" >> /tmp/passed_metrics.txt
-            else
-              echo "- Bugs: ${BUGS} (required = 0)" >> /tmp/failed_metrics.txt
-            fi
-            
-            # Vulnerabilities
-            VULNS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "vulnerabilities") | .value // "0"')
-            if [ "$VULNS" = "0" ]; then
-              echo "- Vulnerabilities: ${VULNS} (required = 0)" >> /tmp/passed_metrics.txt
-            else
-              echo "- Vulnerabilities: ${VULNS} (required = 0)" >> /tmp/failed_metrics.txt
-            fi
+            echo "No conditions found in API response"
+            echo "- No quality gate conditions found" >> /tmp/other_metrics.txt
           fi
 
           # Count failed/passed

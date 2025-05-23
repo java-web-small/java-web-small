@@ -134,7 +134,7 @@ jobs:
           sleep 30
 
           # Lấy kết quả quality gate từ SonarCloud API
-          echo "Fetching quality gate result for project $PROJECT_KEY"
+          echo "Fetching quality gate result for project $PROJECT_KEY $SONAR_TOKEN"
           QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
 
           # Lưu kết quả vào file

@@ -32,72 +32,181 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build and check syntax (skip tests & checkstyle)
+        id: build
         run: |
           mvn verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
+        continue-on-error: true
+
+      - name: Send Discord notification on failure
+        if: steps.build.outcome != 'success'
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
+          title: "❌ Build Failed"
+          description: "Syntax check failed in **${{ github.repository }}**"
+          color: 0xff0000
+          username: CI/CD Bot
+          url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          avatar_url: https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png
+
+      - name: Exit with build status
+        if: steps.build.outcome != 'success'
+        run: exit 1
 
       - name: Upload target/ directory as artifact
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: mvn-target
           path: target/
           retention-days: 1
 
-  # Job 2: SonarQube Analysis
-  # sonar-analysis:
-  #   name: SonarQube Analysis
-  #   runs-on: ubuntu-latest
-  #   needs: syntax-check # chạy sau khi job syntax-check hoàn thành
-  #   if: github.event_name != 'pull_request' # (tùy chọn) chỉ chạy Sonar khi không phải PR, hoặc bạn có thể để luôn chạy
+  sonar-analysis:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    needs: syntax-check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
-  #   steps:
-  #     # 1. Checkout code với full history (để sonar phân tích đúng blame, commit history)
-  #     - name: Checkout repository (full history)
-  #       uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-  #     # 2. Setup JDK 17 & Cache Maven lần nữa
-  #     - name: Set up JDK 17
-  #       uses: actions/setup-java@v3
-  #       with:
-  #         distribution: "temurin"
-  #         java-version: "17"
-  #         cache: "maven"
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "maven"
 
-  #     # 3. Tạo các thư mục .m2 và .sonar/cache (tương đương before_script)
-  #     - name: Cache Maven packages
-  #       uses: actions/cache@v3
-  #       with:
-  #         path: ~/.m2
-  #         key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-  #         restore-keys: ${{ runner.os }}-m2
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
 
-  #     - name: Cache SonarQube packages
-  #       uses: actions/cache@v3
-  #       with:
-  #         path: ~/.sonar/cache
-  #         key: ${{ runner.os }}-sonar
-  #         restore-keys: ${{ runner.os }}-sonar
+      - name: Cache SonarQube packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
 
-  #     # 4. Download built artifacts
-  #     - name: Download built artifacts
-  #       uses: actions/download-artifact@v3
-  #       with:
-  #         name: mvn-target
-  #         path: target/
+      - name: Download built artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: mvn-target
+          path: target/
 
-  #     # 5. SonarQube Scan
-  #     - name: Run SonarQube
-  #       env:
-  #         # 2 biến môi trường dưới đây bạn phải tạo trong GitHub Repository → Settings → Secrets:
-  #         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-  #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-  #       run: |
-  #         mvn verify sonar:sonar \
-  #           -Dsonar.projectKey=splus.cec_java-web-small_AZbnXVYG9fW_saT3QWxv \
-  #           -Dsonar.host.url=$SONAR_HOST_URL \
-  #           -Dsonar.login=$SONAR_TOKEN \
-  #           -Dcheckstyle.skip=true \
-  #           -Dnohttp.checkstyle.skip=true
+      - name: Run SonarQube with quality gate wait
+        id: sonarqube
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed for PR decoration
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn -B verify sonar:sonar \
+            -Dsonar.projectKey=antnm-splus_java-web-small \
+            -Dsonar.organization=antnm-splus \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=$SONAR_TOKEN \
+            -Dcheckstyle.skip=true \
+            -Dnohttp.checkstyle.skip=true
+        continue-on-error: true
 
-  #   continue-on-error: true
+      - name: Get SonarQube quality gate result
+        id: quality_gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          # Đợi một chút để SonarCloud phân tích kết quả
+          sleep 10
+
+          # Lấy kết quả quality gate từ SonarCloud API
+          QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=antnm_spring-petclinic")
+
+          # Lưu kết quả vào file
+          echo "$QG_RESULT" > qg_result.json
+
+          # In ra để debug
+          echo "Quality Gate Result:"
+          cat qg_result.json
+
+          # Trích xuất trạng thái quality gate và đặt làm output
+          QG_STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status')
+          echo "status=$QG_STATUS" >> $GITHUB_OUTPUT
+
+          # Trích xuất conditions để hiển thị chi tiết
+          CONDITIONS=$(echo "$QG_RESULT" | jq -c '.projectStatus.conditions')
+          echo "conditions=$CONDITIONS" >> $GITHUB_OUTPUT
+
+          # Đếm số lượng điều kiện thành công và thất bại
+          PASSED_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="OK") | .status' | wc -l)
+          FAILED_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | select(.status=="ERROR") | .status' | wc -l)
+          echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          # Tạo chi tiết cho Discord
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+          echo "$QG_RESULT" | jq -r '.projectStatus.conditions[] | "- \(.metricKey): \(.actualValue) (threshold: \(.errorThreshold))"' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Prepare SonarQube quality gate message
+        id: prepare_message
+        run: |
+          # Tạo file markdown cho thông báo Discord
+          cat > sonar_message.md << 'EOF'
+          ## SonarQube Analysis Results
+
+          ### Quality Gate: ${{ steps.quality_gate.outputs.status }}
+
+          **Conditions:**
+          - ${{ steps.quality_gate.outputs.passed_count }} passed
+          - ${{ steps.quality_gate.outputs.failed_count }} failed
+
+          **Details:**
+          ${{ steps.quality_gate.outputs.details }}
+
+          [View in SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
+          EOF
+
+      - name: Send Discord notification for SonarQube - SUCCESS
+        if: steps.quality_gate.outputs.status == 'OK'
+        uses: sarisia/actions-status-discord@v1
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          webhook: ${DISCORD_WEBHOOK}
+          title: "✅ SonarQube Quality Gate: SUCCESS"
+          description: "Code quality check passed in **${{ github.repository }}**"
+          color: 0x00ff00
+          username: SonarCloud Bot
+          url: https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small
+          avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
+          nodetail: false
+          content: |
+            ### Quality Gate: PASSED
+            **Details:**
+            ${{ steps.quality_gate.outputs.details }}
+
+      - name: Send Discord notification for SonarQube - FAILED
+        if: steps.quality_gate.outputs.status != 'OK'
+        uses: sarisia/actions-status-discord@v1
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          webhook: ${DISCORD_WEBHOOK}
+          title: "❌ SonarQube Quality Gate: FAILED"
+          description: "Code quality issues detected in **${{ github.repository }}**"
+          color: 0xff0000
+          username: SonarCloud Bot
+          url: https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small
+          avatar_url: https://sonarcloud.io/apple-touch-icon-180x180.png
+          nodetail: false
+          content: |
+            ### Quality Gate: FAILED
+            **Details:**
+            ${{ steps.quality_gate.outputs.details }}
+
+    continue-on-error: true

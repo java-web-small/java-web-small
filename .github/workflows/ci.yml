@@ -62,7 +62,7 @@ jobs:
           cache: "maven"
 
       - name: Cache Maven packages
-        uses: actions/cache@v
+        uses: actions/cache@v3
         with:
           path: ~/.m2
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
@@ -332,12 +332,6 @@ jobs:
             ${{ steps.quality_gate.outputs.passed_metrics }}
 
             #### Other Metrics
-            ${{ steps.quality_gate.outputs.other_metrics }}
-
-            [View Full Report on SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)
-
-    continue-on-error: true
-trics
             ${{ steps.quality_gate.outputs.other_metrics }}
 
             [View Full Report on SonarCloud](https://sonarcloud.io/dashboard?id=antnm-splus_java-web-small)

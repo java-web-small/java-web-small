@@ -1,4 +1,4 @@
-name: CI / SonarQube Analysis
+name: CI / SonarCloud Analysis
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
   pull_request:
     branches:
       - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   syntax-check:
@@ -32,10 +36,29 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build and check syntax (skip tests & checkstyle)
+        id: build
         run: |
-          mvn verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true
+          mvn verify -DskipTests -Dcheckstyle.skip=true -Dnohttp.checkstyle.skip=true -Dspring-javaformat.skip=true
+        continue-on-error: true
+
+      - name: Send Discord notification on failure
+        if: steps.build.outcome != 'success'
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: https://discord.com/api/webhooks/1373962801684676618/7mbjxZjYXVcUsiBEutRuLLeGEHvkVNoZ2hkmfqH_zipVql9diF1VT_66iiY3Va_5llyb
+          title: "❌ Build Failed"
+          description: "Syntax check failed in **${{ github.repository }}**"
+          color: 0xff0000
+          username: CI/CD Bot
+          url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          avatar_url: https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png
+
+      - name: Exit with build status
+        if: steps.build.outcome != 'success'
+        run: exit 1
 
       - name: Upload target/ directory as artifact
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: mvn-target

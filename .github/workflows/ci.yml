@@ -53,10 +53,6 @@ jobs:
           url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           avatar_url: https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png
 
-      - name: Exit with build status
-        if: steps.build.outcome != 'success'
-        run: exit 1
-
       - name: Upload target/ directory as artifact
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -132,213 +128,121 @@ jobs:
         run: |
           PROJECT_KEY="antnm-splus_java-web-small"
 
-          # Get pull request number if running on PR
-          if [ -n "$GITHUB_HEAD_REF" ]; then
-            PR_NUMBER=$(echo $GITHUB_REF | sed 's/refs\/pull\/\([0-9]*\)\/merge/\1/')
+          # Determine branch or PR
+          if [[ "$GITHUB_REF" == refs/pull/* ]]; then
+            PR_NUMBER=$(echo $GITHUB_REF | sed -n 's/refs\/pull\/\([0-9]*\)\/merge/\1/p')
             echo "Running on PR #$PR_NUMBER"
-            ANALYSIS_ID=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/project_analyses/search?project=$PROJECT_KEY&pullRequest=$PR_NUMBER" | jq -r '.analyses[0].key // ""')
+            PARAM="pullRequest=$PR_NUMBER"
           else
-            # If running on branch (usually main)
             BRANCH=${GITHUB_REF#refs/heads/}
             echo "Running on branch $BRANCH"
-            ANALYSIS_ID=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/project_analyses/search?project=$PROJECT_KEY&branch=$BRANCH" | jq -r '.analyses[0].key // ""')
+            PARAM="branch=$BRANCH"
           fi
 
-          if [ -z "$ANALYSIS_ID" ]; then
-            echo "No analysis found yet. Waiting for analysis to be created..."
-            
-            # Wait for analysis to be created (max 2 minutes)
-            MAX_ATTEMPTS=24  # 24 * 5 seconds = 2 minutes
-            ATTEMPT=0
-            
-            while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-              sleep 5
-              ((ATTEMPT++))
-              echo "Checking for analysis (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
-              
-              if [ -n "$GITHUB_HEAD_REF" ]; then
-                ANALYSIS_ID=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/project_analyses/search?project=$PROJECT_KEY&pullRequest=$PR_NUMBER" | jq -r '.analyses[0].key // ""')
-              else
-                ANALYSIS_ID=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/project_analyses/search?project=$PROJECT_KEY&branch=$BRANCH" | jq -r '.analyses[0].key // ""')
-              fi
-              
-              if [ -n "$ANALYSIS_ID" ]; then
-                echo "Analysis found with ID: $ANALYSIS_ID"
-                break
-              fi
-            done
-            
-            if [ -z "$ANALYSIS_ID" ]; then
-              echo "Warning: No analysis found after waiting. Proceeding anyway..."
-            fi
-          else
-            echo "Found existing analysis with ID: $ANALYSIS_ID"
-          fi
-
-          # Wait for quality gate to be computed
-          echo "Waiting for quality gate to be computed..."
-          MAX_ATTEMPTS=30  # 30 * 5 seconds = 2.5 minutes
+          # Wait for quality gate to be computed (max 2 minutes)
+          echo "Waiting for quality gate results..."
+          MAX_ATTEMPTS=24
           ATTEMPT=0
 
           while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-            if [ -n "$GITHUB_HEAD_REF" ]; then
-              QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY&pullRequest=$PR_NUMBER")
-            else
-              QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY&branch=$BRANCH")
-            fi
+            # Get quality gate status
+            QG_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT_KEY&$PARAM")
             
-            STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
-            CONDITIONS=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions')
-            echo "Raw conditions: $CONDITIONS"
-            CONDITIONS_COUNT=$(echo "$CONDITIONS" | jq -r 'length')
-            echo "Found $CONDITIONS_COUNT conditions"
-            
-            if [ "$STATUS" != "NONE" ] && [ "$CONDITIONS_COUNT" -gt 0 ]; then
-              echo "Quality gate computed with status: $STATUS"
-              break
+            # Check if we got valid JSON with conditions
+            if echo "$QG_RESULT" | jq -e '.projectStatus.conditions' >/dev/null 2>&1; then
+              CONDITIONS_COUNT=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions | length // 0')
+              STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
+              
+              if [ "$STATUS" != "NONE" ] && [ "$CONDITIONS_COUNT" -gt 0 ]; then
+                echo "Quality gate computed with status: $STATUS"
+                break
+              fi
             fi
             
             sleep 5
-            ((ATTEMPT++))
-            echo "Waiting for quality gate to be computed (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+            ATTEMPT=$((ATTEMPT+1))
+            echo "Waiting for quality gate (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
           done
 
-          echo "Raw QG result: $QG_RESULT"
-
-          # Save status
+          # Save status to output
           STATUS=$(echo "$QG_RESULT" | jq -r '.projectStatus.status // "NONE"')
           echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-          # Get code smells for other metrics
-          echo "Fetching measures from SonarCloud API..."
-          MEASURES_RESULT=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=code_smells")
+          # Get code smells
+          CODE_SMELLS=$(curl -s -u "${SONAR_TOKEN}:" "https://sonarcloud.io/api/measures/component?component=$PROJECT_KEY&metricKeys=code_smells" | 
+                        jq -r '.component.measures[0].value // "0"')
 
-          # Always add Code Smells to other metrics
-          CODE_SMELLS=$(echo "$MEASURES_RESULT" | jq -r '.component.measures[] | select(.metric == "code_smells") | .value // "0"')
+          # Process conditions
+          FAILED_METRICS=""
+          PASSED_METRICS=""
+          OTHER_METRICS="- Code Smells: ${CODE_SMELLS}"
 
-          # Create temporary files for metrics
-          echo "" > /tmp/failed_metrics.txt
-          echo "" > /tmp/passed_metrics.txt
-          echo "" > /tmp/other_metrics.txt
-
-          echo "- Code Smells: ${CODE_SMELLS}" >> /tmp/other_metrics.txt
-
-          # Process conditions from API response
           CONDITIONS=$(echo "$QG_RESULT" | jq -r '.projectStatus.conditions')
-          echo "Raw conditions: $CONDITIONS"
-          CONDITIONS_COUNT=$(echo "$CONDITIONS" | jq -r 'length')
-          echo "Found $CONDITIONS_COUNT conditions"
+          CONDITIONS_COUNT=$(echo "$CONDITIONS" | jq -r 'length // 0')
 
           if [ "$CONDITIONS_COUNT" -gt 0 ]; then
-            echo "Processing $CONDITIONS_COUNT conditions from API"
+            echo "Processing $CONDITIONS_COUNT conditions"
             
             # Process each condition
             for i in $(seq 0 $(($CONDITIONS_COUNT - 1))); do
-              CONDITION=$(echo "$CONDITIONS" | jq -r ".[$i]")
-              echo "Processing condition $i: $CONDITION"
+              CONDITION=$(echo "$CONDITIONS" | jq -r ".[$i] // {}")
               
-              METRIC_KEY=$(echo "$CONDITION" | jq -r '.metricKey')
-              ACTUAL_VALUE=$(echo "$CONDITION" | jq -r '.actualValue')
-              ERROR_THRESHOLD=$(echo "$CONDITION" | jq -r '.errorThreshold')
-              COMPARATOR=$(echo "$CONDITION" | jq -r '.comparator')
-              STATUS=$(echo "$CONDITION" | jq -r '.status')
-              
-              echo "Extracted values - Key: $METRIC_KEY, Value: $ACTUAL_VALUE, Threshold: $ERROR_THRESHOLD, Comparator: $COMPARATOR, Status: $STATUS"
-              
-              # Format condition text based on comparator
-              if [ "$COMPARATOR" = "LT" ]; then
-                # LT means the actual value should be >= threshold
-                DISPLAY_COMPARATOR="≥"
-              elif [ "$COMPARATOR" = "GT" ]; then
-                # GT means the actual value should be <= threshold
-                DISPLAY_COMPARATOR="≤"
-              elif [ "$COMPARATOR" = "EQ" ]; then
-                DISPLAY_COMPARATOR="="
-              else
-                DISPLAY_COMPARATOR="$COMPARATOR"
+              # Skip empty conditions
+              if [ "$CONDITION" = "{}" ] || [ -z "$CONDITION" ]; then
+                continue
               fi
+              
+              # Extract values
+              METRIC_KEY=$(echo "$CONDITION" | jq -r '.metricKey // "unknown"')
+              ACTUAL_VALUE=$(echo "$CONDITION" | jq -r '.actualValue // "0"')
+              ERROR_THRESHOLD=$(echo "$CONDITION" | jq -r '.errorThreshold // "0"')
+              COMPARATOR=$(echo "$CONDITION" | jq -r '.comparator // "EQ"')
+              STATUS=$(echo "$CONDITION" | jq -r '.status // "NONE"')
               
               # Format user-friendly metric name
               case "$METRIC_KEY" in
-                "new_coverage")
-                  METRIC_NAME="Coverage on New Code"
-                  UNIT="%"
-                  ;;
-                "new_duplicated_lines_density")
-                  METRIC_NAME="Duplication on New Code"
-                  UNIT="%"
-                  ;;
-                "new_reliability_rating")
-                  METRIC_NAME="Reliability Rating"
-                  UNIT=""
-                  ;;
-                "new_security_rating")
-                  METRIC_NAME="Security Rating"
-                  UNIT=""
-                  ;;
-                "new_maintainability_rating")
-                  METRIC_NAME="Maintainability Rating"
-                  UNIT=""
-                  ;;
-                "new_security_hotspots_reviewed")
-                  METRIC_NAME="Security Hotspots Reviewed"
-                  UNIT="%"
-                  ;;
-                *)
-                  METRIC_NAME="$METRIC_KEY"
-                  UNIT=""
-                  ;;
+                "new_coverage") METRIC_NAME="Coverage on New Code"; UNIT="%" ;;
+                "new_duplicated_lines_density") METRIC_NAME="Duplication on New Code"; UNIT="%" ;;
+                "new_reliability_rating") METRIC_NAME="Reliability Rating"; UNIT="" ;;
+                "new_security_rating") METRIC_NAME="Security Rating"; UNIT="" ;;
+                "new_maintainability_rating") METRIC_NAME="Maintainability Rating"; UNIT="" ;;
+                "new_security_hotspots_reviewed") METRIC_NAME="Security Hotspots Reviewed"; UNIT="%" ;;
+                *) METRIC_NAME="$METRIC_KEY"; UNIT="" ;;
               esac
               
-              # Create formatted condition text
-              CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
-              echo "Formatted text: $CONDITION_TEXT"
+              # Format comparator
+              DISPLAY_COMPARATOR=$([[ "$COMPARATOR" = "LT" ]] && echo "≥" || 
+                                  [[ "$COMPARATOR" = "GT" ]] && echo "≤" || 
+                                  [[ "$COMPARATOR" = "EQ" ]] && echo "=" || 
+                                  echo "$COMPARATOR")
               
-              # Add to appropriate file based on status
+              # Create formatted text
+              CONDITION_TEXT="- $METRIC_NAME: $ACTUAL_VALUE$UNIT (required $DISPLAY_COMPARATOR $ERROR_THRESHOLD$UNIT)"
+              
+              # Add to appropriate output
               if [ "$STATUS" = "OK" ]; then
-                echo "Adding to passed metrics: $CONDITION_TEXT"
-                echo "$CONDITION_TEXT" >> /tmp/passed_metrics.txt
+                PASSED_METRICS="${PASSED_METRICS}${CONDITION_TEXT}\n"
               elif [ "$STATUS" = "ERROR" ]; then
-                echo "Adding to failed metrics: $CONDITION_TEXT"
-                echo "$CONDITION_TEXT" >> /tmp/failed_metrics.txt
+                FAILED_METRICS="${FAILED_METRICS}${CONDITION_TEXT}\n"
               else
-                echo "Adding to other metrics: $CONDITION_TEXT"
-                echo "$CONDITION_TEXT" >> /tmp/other_metrics.txt
+                OTHER_METRICS="${OTHER_METRICS}\n${CONDITION_TEXT}"
               fi
             done
-            
-            # Debug: show contents of files
-            echo "Contents of /tmp/passed_metrics.txt:"
-            cat /tmp/passed_metrics.txt
-            echo "Contents of /tmp/failed_metrics.txt:"
-            cat /tmp/failed_metrics.txt
           else
-            echo "No conditions found in API response"
-            echo "- No quality gate conditions found" >> /tmp/other_metrics.txt
+            OTHER_METRICS="${OTHER_METRICS}\n- No quality gate conditions found"
           fi
 
-          # Count failed/passed
-          FAILED_COUNT=$(grep -c "^-" /tmp/failed_metrics.txt || true)
-          PASSED_COUNT=$(grep -c "^-" /tmp/passed_metrics.txt || true)
+          # Count metrics
+          FAILED_COUNT=$(echo -e "$FAILED_METRICS" | grep -c "^-" || echo 0)
+          PASSED_COUNT=$(echo -e "$PASSED_METRICS" | grep -c "^-" || echo 0)
 
-          # Handle empty results
-          if [ -z "$FAILED_COUNT" ] || [ "$FAILED_COUNT" = "" ]; then
-            FAILED_COUNT=0
-          fi
-
-          if [ -z "$PASSED_COUNT" ] || [ "$PASSED_COUNT" = "" ]; then
-            PASSED_COUNT=0
-          fi
-
-          echo "Failed count: $FAILED_COUNT, Passed count: $PASSED_COUNT"
-
+          # Set outputs
           echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
           echo "passed_count=$PASSED_COUNT" >> $GITHUB_OUTPUT
 
-          # Format outputs
           echo "failed_metrics<<EOF" >> $GITHUB_OUTPUT
           if [ "$FAILED_COUNT" -gt 0 ]; then
-            cat /tmp/failed_metrics.txt >> $GITHUB_OUTPUT
+            echo -e "$FAILED_METRICS" >> $GITHUB_OUTPUT
           else
             echo "No failed conditions" >> $GITHUB_OUTPUT
           fi
@@ -346,30 +250,15 @@ jobs:
 
           echo "passed_metrics<<EOF" >> $GITHUB_OUTPUT
           if [ "$PASSED_COUNT" -gt 0 ]; then
-            cat /tmp/passed_metrics.txt >> $GITHUB_OUTPUT
+            echo -e "$PASSED_METRICS" >> $GITHUB_OUTPUT
           else
             echo "No passed conditions" >> $GITHUB_OUTPUT
           fi
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "other_metrics<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/other_metrics.txt >> $GITHUB_OUTPUT
+          echo -e "$OTHER_METRICS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
-          # Debug: Show what's being sent to GitHub output
-          echo "Content being sent to GitHub output:"
-          echo "Failed metrics:"
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            cat /tmp/failed_metrics.txt
-          else
-            echo "No failed conditions"
-          fi
-          echo "Passed metrics:"
-          if [ "$PASSED_COUNT" -gt 0 ]; then
-            cat /tmp/passed_metrics.txt
-          else
-            echo "No passed conditions"
-          fi
 
       - name: Send Discord notification for SonarCloud
         if: always()

@@ -9,7 +9,7 @@ import java.util.Map;
 /**
  * Class này được tạo để kiểm tra chức năng phát hiện code trùng lặp của SonarQube
  */
-public class DuplicateCodeTest {
+public class DuplicateCodeTest2 {
 
 	// Block code trùng lặp #1
 	public List<String> processData(String[] inputs) {

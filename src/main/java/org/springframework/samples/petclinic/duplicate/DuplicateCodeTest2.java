@@ -114,7 +114,7 @@ public class DuplicateCodeTest2 {
 			throw new IllegalArgumentException("Start date must be before end date");
 		}
 
-		System.out.println("Processing date range from3123123123123 " + startDate + " to " + endDate);
+		System.out.println("Processing date range 111111 " + startDate + " to " + endDate);
 
 		LocalDate currentDate = startDate;
 		while (!currentDate.isAfter(endDate)) {

@@ -64,7 +64,7 @@ class VisitController {
 			Map<String, Object> model) {
 		Optional<Owner> optionalOwner = owners.findById(ownerId);
 		Owner owner = optionalOwner.orElseThrow(() -> new IllegalArgumentException(
-				"Owner not found with id: " + ownerId + ". Please ensure the ID is correct "));
+				"Owner not found with id: " + ownerId + ". Please ensure the ID is correct11111111 "));
 
 		Pet pet = owner.getPet(petId);
 		model.put("pet", pet);

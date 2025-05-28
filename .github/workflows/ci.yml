@@ -92,7 +92,7 @@ jobs:
 
           mvn -B verify sonar:sonar \
             -Dsonar.projectKey=$PROJECT_KEY \
-            -Dsonar.projectName=spring-petclinic \
+            -Dsonar.projectName=java-web-small \
             -Dsonar.organization=java-web-small \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.login=$SONAR_TOKEN \

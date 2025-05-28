@@ -84,6 +84,7 @@ jobs:
       - name: Run SonarCloud Analysis
         id: sonarcloud
         env:
+          GITHUB_TOKEN: ${{ secrets.GIT_HUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           PROJECT_KEY="antnm-splus_java-web-small"

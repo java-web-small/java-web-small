@@ -18,6 +18,8 @@ package org.springframework.samples.petclinic.owner;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.Optional;
+import java.util.List;
+import java.util.ArrayList;
 
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.ModelMap;
@@ -42,7 +44,7 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
  */
 @Controller
 @RequestMapping("/owners/{ownerId}")
-class PetController {
+public class PetController {
 
 	private static final String VIEWS_PETS_CREATE_OR_UPDATE_FORM = "pets/createOrUpdatePetForm";
 
@@ -170,4 +172,36 @@ class PetController {
 		this.owners.save(owner);
 	}
 
+	// Static inner class for PetOwnerPair
+	public static class PetOwnerPair {
+		private final Pet pet;
+		private final Owner owner;
+
+		public PetOwnerPair(Pet pet, Owner owner) {
+			this.pet = pet;
+			this.owner = owner;
+		}
+
+		public Pet getPet() {
+			return pet;
+		}
+
+		public Owner getOwner() {
+			return owner;
+		}
+	}
+
+	// Controller method for pets list page
+	@GetMapping("/pets")
+	public String listAllPets(ModelMap model) {
+		List<PetOwnerPair> petOwnerPairs = new ArrayList<>();
+		Collection<Owner> allOwners = this.owners.findAll();
+		for (Owner owner : allOwners) {
+			for (Pet pet : owner.getPets()) {
+				petOwnerPairs.add(new PetOwnerPair(pet, owner));
+			}
+		}
+		model.addAttribute("petOwnerPairs", petOwnerPairs);
+		return "pets/petsList";
+	}
 }

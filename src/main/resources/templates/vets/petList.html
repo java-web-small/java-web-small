@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>All Pets</title>
+    <th:block th:replace="fragments/layout :: head"></th:block>
+</head>
+<body>
+    <th:block th:replace="fragments/layout :: navbar"></th:block>
+    <div class="container">
+        <h2>All Pets</h2>
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Pet Name</th>
+                    <th>Type</th>
+                    <th>Birth Date</th>
+                    <th>Owner</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="pair : ${petOwnerPairs}">
+                    <td th:text="${pair.pet.name}">Pet Name</td>
+                    <td th:text="${pair.pet.type.name}">Type</td>
+                    <td th:text="${#dates.format(pair.pet.birthDate, 'yyyy-MM-dd')}">Birth Date</td>
+                    <td>
+                        <a th:href="@{|/owners/${pair.owner.id}|}" th:text="${pair.owner.firstName + ' ' + pair.owner.lastName}">Owner Name</a>
+                    </td>
+                    <td>
+                        <a class="btn btn-primary btn-sm"
+                           th:href="@{|/owners/${pair.owner.id}/pets/${pair.pet.id}/edit|}">
+                            Edit
+                        </a>
+                        <!-- Uncomment the following if delete is implemented in the controller
+                        <a class="btn btn-danger btn-sm"
+                           th:href="@{|/owners/${pair.owner.id}/pets/${pair.pet.id}/delete|}">
+                            Delete
+                        </a>
+                        -->
+                        <!-- Uncomment the following if view details is implemented in the controller
+                        <a class="btn btn-info btn-sm"
+                           th:href="@{|/owners/${pair.owner.id}/pets/${pair.pet.id}|}">
+                            Details
+                        </a>
+                        -->
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <th:block th:replace="fragments/layout :: footer"></th:block>
+</body>
+</html>

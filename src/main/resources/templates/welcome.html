@@ -5,6 +5,11 @@
   <body>
 
     <h2 th:text="#{welcome}">Welcome</h2>
+    <div class="row mb-4">
+      <div class="col-md-12 text-center">
+        <a th:href="@{/pets}" class="btn btn-primary btn-lg" th:text="#{view.all.pets}">View All Pets</a>
+      </div>
+    </div>
     <div class="row">
         <div class="col-md-12">
           <img class="img-responsive" src="../static/resources/images/pets.png" th:src="@{/resources/images/pets.png}"/>
